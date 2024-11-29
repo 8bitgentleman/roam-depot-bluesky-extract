@@ -60,8 +60,9 @@ async function parseBlueskyUrl(url) {
     const handle = parts[parts.indexOf('profile') + 1];
     const rkey = parts[parts.indexOf('post') + 1];
 
-    const didResponse = await fetch(
-      `${CORS_PROXY_URL}https://bsky.social/xrpc/com.atproto.identity.resolveHandle?handle=${handle}`,
+    // Get profile info using public API
+    const profileResponse = await fetch(
+      `${CORS_PROXY_URL}https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor=${handle}`,
       {
         method: 'GET',
         headers: {
@@ -70,8 +71,13 @@ async function parseBlueskyUrl(url) {
       }
     );
 
-    const { did } = await didResponse.json();
-    return { did, collection: 'app.bsky.feed.post', rkey };
+    const profileData = await profileResponse.json();
+    return { 
+      did: profileData.did, 
+      collection: 'app.bsky.feed.post', 
+      rkey,
+      profile: profileData 
+    };
   }
 
   if (url.startsWith('at://')) {
@@ -84,7 +90,7 @@ async function parseBlueskyUrl(url) {
 
 async function fetchBlueskyPost(url) {
   try {
-    const { did, collection, rkey } = await parseBlueskyUrl(url);
+    const { did, collection, rkey, profile } = await parseBlueskyUrl(url);
 
     const response = await fetch(
       `${CORS_PROXY_URL}https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${did}&collection=${collection}&rkey=${rkey}`,
@@ -100,7 +106,8 @@ async function fetchBlueskyPost(url) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    return await response.json();
+    const postData = await response.json();
+    return { ...postData, profile };
   } catch (error) {
     console.error('Error fetching Bluesky post:', error);
     throw error;
@@ -108,11 +115,9 @@ async function fetchBlueskyPost(url) {
 }
 
 async function uploadFile(originalUrl) {
-  const CORS_PROXY_URL = window.roamAlphaAPI.constants.corsAnywhereProxyUrl;
-
   try {
     // Fetch the image through the CORS proxy
-    const proxyUrl = `${CORS_PROXY_URL}/${originalUrl}`;
+    const proxyUrl = `${CORS_PROXY_URL}${originalUrl}`;
     const response = await fetch(proxyUrl);
     const blob = await response.blob();
 
@@ -120,17 +125,20 @@ async function uploadFile(originalUrl) {
     const filename = originalUrl.split('/').pop();
     const file = new File([blob], filename, { type: blob.type });
 
-    // Upload to Roam
-    const uploadedUrl = await window.roamAlphaAPI.util.uploadFile({
+    // Upload using new file API
+    const uploadedUrl = await window.roamAlphaAPI.file.upload({
       file: file,
+      toast: { hide: true }
     });
 
-    // Extract the markdown URL
-    const MD_IMAGE_REGEX = /\!\[\]\((.*)\)/g;
-    const strippedUrl = [...uploadedUrl.matchAll(MD_IMAGE_REGEX)];
-    const cleanUrl = strippedUrl?.[0]?.[0] ?? uploadedUrl;
+    // Return as markdown image
+    if (blob.type.startsWith('image/')) {
+      return `![](${uploadedUrl})`;
+    } else if (blob.type.startsWith('video/')) {
+      return `{{[[video]]: ${uploadedUrl}}}`;
+    }
 
-    return cleanUrl;
+    return uploadedUrl;
   } catch (error) {
     console.error('Error uploading file:', error);
     return null;
@@ -212,12 +220,13 @@ async function extractPost(uid, post, template, imageLocation) {
   }
 
   let postURL = getPostUrl(post);
-  let postData = await fetchBlueskyPost(postURL);
+  let { profile, value: postData } = await fetchBlueskyPost(postURL);
 
   // Extract post info
-  let postText = postData.value.text;
-  let postDate = postData.value.createdAt;
-  let authorHandle = postURL.split('/')[4]; // Extract from URL for now
+  let postText = postData.text;
+  let postDate = postData.createdAt;
+  let authorHandle = profile.handle;
+  let authorName = profile.displayName;
 
   // Convert post date to roam date format
   let roamDate = new Date(Date.parse(postDate));
@@ -226,16 +235,17 @@ async function extractPost(uid, post, template, imageLocation) {
   // Parse post with template
   var parsedPost = template.replaceAll('{POST}', postText);
   parsedPost = parsedPost.replaceAll('{URL}', postURL);
+  parsedPost = parsedPost.replaceAll('{AUTHOR_NAME}', authorName || authorHandle);
   parsedPost = parsedPost.replaceAll('{AUTHOR_HANDLE}', authorHandle);
   parsedPost = parsedPost.replaceAll('{AUTHOR_URL}', `https://bsky.app/profile/${authorHandle}`);
   parsedPost = parsedPost.replaceAll('{DATE}', roamDate);
   parsedPost = parsedPost.replaceAll('{NEWLINE}', "\n");
 
   // Handle images
-  if (postData.value.embed && postData.value.embed.$type === 'app.bsky.embed.images') {
+  if (postData.embed && postData.embed.$type === 'app.bsky.embed.images') {
     if (imageLocation === 'inline') {
       let parsedImages = "";
-      for (const image of postData.value.embed.images) {
+      for (const image of postData.embed.images) {
         const imageUrl = `https://cdn.bsky.social/imgproxy/${image.image.ref.$link}`;
         const cleanedAttachment = await uploadFile(imageUrl);
         if (cleanedAttachment) {
@@ -247,18 +257,18 @@ async function extractPost(uid, post, template, imageLocation) {
       parsedPost = parsedPost.replaceAll('{IMAGES}', "");
     } else {
       parsedPost = parsedPost.replaceAll('{IMAGES}', "");
-      for (const image of postData.value.embed.images) {
+      for (const image of postData.embed.images) {
         const imageUrl = `https://cdn.bsky.social/imgproxy/${image.image.ref.$link}`;
         const cleanedAttachment = await uploadFile(imageUrl);
         if (cleanedAttachment) {
           window.roamAlphaAPI.createBlock({
-            "location":
-            {
+            "location": {
               "parent-uid": uid,
               "order": 'last'
             },
-            "block":
-              { "string": cleanedAttachment }
+            "block": { 
+              "string": cleanedAttachment 
+            }
           });
         }
       }
