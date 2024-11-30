@@ -3,18 +3,7 @@ import pkg from '../package.json';
 var defaultPostTemplate = '[[>]] {POST} {NEWLINE} [🦋]({URL}) by {AUTHOR_NAME} on [[{DATE}]]'
 const CORS_PROXY_URL = `${window.roamAlphaAPI.constants.corsAnywhereProxyUrl}/`
 
-function getPostTemplate(extensionAPI) {
-  return extensionAPI.settings.get('post-template') || defaultPostTemplate
-}
-
-function getimageLocation(extensionAPI) {
-  return extensionAPI.settings.get('image-location') || "child block"
-}
-
-function getAutoExtractTag(extensionAPI) {
-  return extensionAPI.settings.get('auto-extract-tag') || "bluesky-extract"
-}
-
+console.log('Debug: Starting extension load');
 const panelConfig = {
   tabTitle: "Bluesky Extract",
   settings: [
@@ -53,44 +42,71 @@ const panelConfig = {
     }
   ]
 };
+function getPostTemplate(extensionAPI) {
+  const template = extensionAPI.settings.get('post-template') || defaultPostTemplate;
+  console.log('Debug: Got post template:', template);
+  return template;
+}
+
+function getimageLocation(extensionAPI) {
+  const location = extensionAPI.settings.get('image-location') || "child block";
+  console.log('Debug: Got image location setting:', location);
+  return location;
+}
+
+function getAutoExtractTag(extensionAPI) {
+  const tag = extensionAPI.settings.get('auto-extract-tag') || "bluesky-extract";
+  console.log('Debug: Got auto extract tag:', tag);
+  return tag;
+}
 
 async function parseBlueskyUrl(url) {
-  if (url.includes('bsky.app')) {
-    const parts = url.split('/');
-    const handle = parts[parts.indexOf('profile') + 1];
-    const rkey = parts[parts.indexOf('post') + 1];
+  console.log('Debug: Parsing URL:', url);
+  try {
+    if (url.includes('bsky.app')) {
+      const parts = url.split('/');
+      const handle = parts[parts.indexOf('profile') + 1];
+      const rkey = parts[parts.indexOf('post') + 1];
+      console.log('Debug: Parsed bsky.app URL - handle:', handle, 'rkey:', rkey);
 
-    // Get profile info using public API
-    const profileResponse = await fetch(
-      `${CORS_PROXY_URL}https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor=${handle}`,
-      {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/json'
+      const profileResponse = await fetch(
+        `${CORS_PROXY_URL}https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor=${handle}`,
+        {
+          method: 'GET',
+          headers: {
+            'Accept': 'application/json'
+          }
         }
-      }
-    );
+      );
 
-    const profileData = await profileResponse.json();
-    return {
-      did: profileData.did,
-      collection: 'app.bsky.feed.post',
-      rkey,
-      profile: profileData
-    };
+      const profileData = await profileResponse.json();
+      console.log('Debug: Got profile data:', profileData);
+      return {
+        did: profileData.did,
+        collection: 'app.bsky.feed.post',
+        rkey,
+        profile: profileData
+      };
+    }
+
+    if (url.startsWith('at://')) {
+      const [_, did, collection, rkey] = url.split('/');
+      console.log('Debug: Parsed at:// URL - did:', did, 'collection:', collection, 'rkey:', rkey);
+      return { did, collection, rkey };
+    }
+
+    throw new Error('Invalid Bluesky URL format');
+  } catch (error) {
+    console.error('Debug: Error parsing URL:', error);
+    throw error;
   }
-
-  if (url.startsWith('at://')) {
-    const [_, did, collection, rkey] = url.split('/');
-    return { did, collection, rkey };
-  }
-
-  throw new Error('Invalid Bluesky URL format');
 }
 
 async function fetchBlueskyPost(url) {
+  console.log('Debug: Fetching post from URL:', url);
   try {
     const { did, collection, rkey } = await parseBlueskyUrl(url);
+    console.log('Debug: Parsed URL components - did:', did, 'collection:', collection, 'rkey:', rkey);
 
     const response = await fetch(
       `${CORS_PROXY_URL}https://api.bsky.app/xrpc/app.bsky.feed.getPostThread?depth=0&uri=at://${did}/${collection}/${rkey}`,
@@ -103,35 +119,39 @@ async function fetchBlueskyPost(url) {
     );
 
     if (!response.ok) {
+      console.error('Debug: API response not OK:', response.status, response.statusText);
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
     const threadData = await response.json();
+    console.log('Debug: Got thread data:', threadData);
     return threadData.thread.post;
   } catch (error) {
-    console.error('Error fetching Bluesky post:', error);
+    console.error('Debug: Error fetching post:', error);
     throw error;
   }
 }
 
 async function uploadFile(originalUrl) {
+  console.log('Debug: Starting file upload from URL:', originalUrl);
   try {
-    // Fetch the image through the CORS proxy
     const proxyUrl = `${CORS_PROXY_URL}${originalUrl}`;
+    console.log('Debug: Using proxy URL:', proxyUrl);
+
     const response = await fetch(proxyUrl);
     const blob = await response.blob();
+    console.log('Debug: Got blob:', blob.type, blob.size);
 
-    // Create a File object from the blob
     const filename = originalUrl.split('/').pop();
     const file = new File([blob], filename, { type: blob.type });
+    console.log('Debug: Created file object:', filename, file.type);
 
-    // Upload using new file API
     const uploadedUrl = await window.roamAlphaAPI.file.upload({
       file: file,
       toast: { hide: true }
     });
+    console.log('Debug: File uploaded successfully:', uploadedUrl);
     
-    // Return as markdown image
     if (blob.type.startsWith('image/')) {
       return `![](${uploadedUrl})`;
     } else if (blob.type.startsWith('video/')) {
@@ -140,7 +160,7 @@ async function uploadFile(originalUrl) {
 
     return uploadedUrl;
   } catch (error) {
-    console.error('Error uploading file:', error);
+    console.error('Debug: Error uploading file:', error);
     return null;
   }
 }
@@ -205,6 +225,11 @@ function extractCurrentBlock(uid, template, imageLocation) {
 }
 
 async function extractPost(uid, post, template, imageLocation) {
+  console.log('Debug: Starting post extraction for UID:', uid);
+  console.log('Debug: Input post:', post);
+  console.log('Debug: Using template:', template);
+  console.log('Debug: Image location setting:', imageLocation);
+
   addSpinner(uid);
 
   const regex = /(\b(https?|ftp|file):\/\/[-A-Z0-9+&@#\/%?=~_|!:,.;]*[-A-Z0-9+&@#\/%=~_|])/;
@@ -212,6 +237,7 @@ async function extractPost(uid, post, template, imageLocation) {
 
   function getPostUrl(content) {
     let urlsTab = content.match(urlRegex);
+    console.log('Debug: Found URLs in content:', urlsTab);
     if (urlsTab != null) {
       return urlsTab[urlsTab.length - 1];
     } else {
@@ -219,103 +245,128 @@ async function extractPost(uid, post, template, imageLocation) {
     }
   }
 
-  let postURL = getPostUrl(post);
-  let thread = await fetchBlueskyPost(postURL);
-  let postData = thread;
+  try {
+    let postURL = getPostUrl(post);
+    console.log('Debug: Extracted post URL:', postURL);
 
-  // Extract post info
-  let postText = postData.record.text;
-  let postDate = postData.record.createdAt;
-  let authorHandle = postData.author.handle;
-  let authorName = postData.author.displayName;
+    let thread = await fetchBlueskyPost(postURL);
+    console.log('Debug: Fetched thread data:', thread);
+    let postData = thread;
 
-  // Convert post date to roam date format
-  let roamDate = new Date(Date.parse(postDate));
-  roamDate = window.roamAlphaAPI.util.dateToPageTitle(roamDate);
+    let postText = postData.record.text;
+    let postDate = postData.record.createdAt;
+    let authorHandle = postData.author.handle;
+    let authorName = postData.author.displayName;
 
-  // Parse post with template
-  var parsedPost = template.replaceAll('{POST}', postText);
-  parsedPost = parsedPost.replaceAll('{URL}', postURL);
-  parsedPost = parsedPost.replaceAll('{AUTHOR_NAME}', authorName || authorHandle);
-  parsedPost = parsedPost.replaceAll('{AUTHOR_HANDLE}', authorHandle);
-  parsedPost = parsedPost.replaceAll('{AUTHOR_URL}', `https://bsky.app/profile/${authorHandle}`);
-  parsedPost = parsedPost.replaceAll('{DATE}', roamDate);
-  parsedPost = parsedPost.replaceAll('{NEWLINE}', "\n");
-  
-  // Handle media embeds (images or video)
-  if (postData.embed) {
-    if (postData.embed.$type === 'app.bsky.embed.images#view') {
-      if (imageLocation === 'inline') {
-        let parsedImages = "";
-        for (const image of postData.embed.images) {
-          const cleanedAttachment = await uploadFile(image.fullsize);
+    console.log('Debug: Extracted post details:', {
+      postText,
+      postDate,
+      authorHandle,
+      authorName
+    });
+
+    let roamDate = new Date(Date.parse(postDate));
+    roamDate = window.roamAlphaAPI.util.dateToPageTitle(roamDate);
+    console.log('Debug: Converted date to Roam format:', roamDate);
+
+    var parsedPost = template
+      .replaceAll('{POST}', postText)
+      .replaceAll('{URL}', postURL)
+      .replaceAll('{AUTHOR_NAME}', authorName || authorHandle)
+      .replaceAll('{AUTHOR_HANDLE}', authorHandle)
+      .replaceAll('{AUTHOR_URL}', `https://bsky.app/profile/${authorHandle}`)
+      .replaceAll('{DATE}', roamDate)
+      .replaceAll('{NEWLINE}', "\n");
+
+    console.log('Debug: Initial parsed post:', parsedPost);
+    
+    if (postData.embed) {
+      console.log('Debug: Processing embed type:', postData.embed.$type);
+      
+      if (postData.embed.$type === 'app.bsky.embed.images#view') {
+        if (imageLocation === 'inline') {
+          let parsedImages = "";
+          for (const image of postData.embed.images) {
+            console.log('Debug: Processing inline image:', image.fullsize);
+            const cleanedAttachment = await uploadFile(image.fullsize);
+            if (cleanedAttachment) {
+              parsedImages = parsedImages.concat(" ", cleanedAttachment);
+            }
+          }
+          parsedPost = parsedPost.replaceAll('{IMAGES}', parsedImages);
+        } else if (imageLocation === 'skip images') {
+          parsedPost = parsedPost.replaceAll('{IMAGES}', "");
+        } else {
+          parsedPost = parsedPost.replaceAll('{IMAGES}', "");
+          for (const image of postData.embed.images) {
+            console.log('Debug: Processing child block image:', image.fullsize);
+            const cleanedAttachment = await uploadFile(image.fullsize);
+            if (cleanedAttachment) {
+              await window.roamAlphaAPI.createBlock({
+                "location": {
+                  "parent-uid": uid,
+                  "order": 'last'
+                },
+                "block": {
+                  "string": cleanedAttachment
+                }
+              });
+            }
+          }
+        }
+      } else if (postData.embed.$type === 'app.bsky.embed.video#view') {
+        console.log('Debug: Processing video embed:', postData.embed);
+        if (imageLocation === 'skip images') {
+          parsedPost = parsedPost.replaceAll('{IMAGES}', "");
+        } else {
+          const videoUrl = `https://bsky.social/xrpc/com.atproto.sync.getBlob?did=${postData.author.did}&cid=${postData.embed.cid}`;
+          console.log('Debug: Video URL:', videoUrl);
+
+          const cleanedAttachment = await uploadFile(videoUrl);
+          
           if (cleanedAttachment) {
-            parsedImages = parsedImages.concat(" ", cleanedAttachment);
+            const videoStr = cleanedAttachment;
+            if (imageLocation === 'inline') {
+              parsedPost = parsedPost.replaceAll('{IMAGES}', videoStr);
+            } else {
+              parsedPost = parsedPost.replaceAll('{IMAGES}', "");
+              await window.roamAlphaAPI.createBlock({
+                "location": {
+                  "parent-uid": uid,
+                  "order": 'last'
+                },
+                "block": { 
+                  "string": videoStr
+                }
+              });
+            }
           }
         }
-        parsedPost = parsedPost.replaceAll('{IMAGES}', parsedImages);
-      } else if (imageLocation === 'skip images') {
-        parsedPost = parsedPost.replaceAll('{IMAGES}', "");
       } else {
+        console.log('Debug: Unknown embed type, removing {IMAGES} placeholder');
         parsedPost = parsedPost.replaceAll('{IMAGES}', "");
-        for (const image of postData.embed.images) {
-          const cleanedAttachment = await uploadFile(image.fullsize);
-          if (cleanedAttachment) {
-            window.roamAlphaAPI.createBlock({
-              "location": {
-                "parent-uid": uid,
-                "order": 'last'
-              },
-              "block": {
-                "string": cleanedAttachment
-              }
-            });
-          }
-        }
-      }
-    } else if (postData.embed.$type === 'app.bsky.embed.video#view') {
-      if (imageLocation === 'skip images') {
-        parsedPost = parsedPost.replaceAll('{IMAGES}', "");
-      } else {
-        const videoUrl = `https://bsky.social/xrpc/com.atproto.sync.getBlob?did=${postData.author.did}&cid=${postData.embed.cid}`;
-
-
-        const cleanedAttachment = await uploadFile(videoUrl);
-        
-        if (cleanedAttachment) {
-          const videoStr = cleanedAttachment;
-          if (imageLocation === 'inline') {
-            
-            parsedPost = parsedPost.replaceAll('{IMAGES}', videoStr);
-          } else {
-            parsedPost = parsedPost.replaceAll('{IMAGES}', "");
-            window.roamAlphaAPI.createBlock({
-              "location": {
-                "parent-uid": uid,
-                "order": 'last'
-              },
-              "block": { 
-                "string": videoStr
-              }
-            });
-          }
-        }
       }
     } else {
+      console.log('Debug: No embed found, removing {IMAGES} placeholder');
       parsedPost = parsedPost.replaceAll('{IMAGES}', "");
     }
-  } else {
-    parsedPost = parsedPost.replaceAll('{IMAGES}', "");
+
+    console.log('Debug: Final parsed post:', parsedPost);
+
+    await window.roamAlphaAPI.updateBlock({
+      block: {
+        uid: uid,
+        string: parsedPost
+      }
+    });
+
+    console.log('Debug: Block updated successfully');
+    removeSpinner(uid);
+  } catch (error) {
+    console.error('Debug: Error in extractPost:', error);
+    removeSpinner(uid);
+    throw error;
   }
-
-  window.roamAlphaAPI.updateBlock({
-    block: {
-      uid: uid,
-      string: parsedPost
-    }
-  });
-
-  removeSpinner(uid);
 }
 
 function getPageRefs(page) {
@@ -331,53 +382,69 @@ function getPageRefs(page) {
 }
 
 async function onload({ extensionAPI }) {
-  extensionAPI.settings.panel.create(panelConfig);
+  console.log('Debug: Extension loading started');
+  
+  try {
+    extensionAPI.settings.panel.create(panelConfig);
+    console.log('Debug: Settings panel created');
 
-  extensionAPI.ui.commandPalette.addCommand({
-    label: 'Extract Bluesky Post',
-    callback: () => {
-      let block = window.roamAlphaAPI.ui.getFocusedBlock();
-      if (block != null) {
-        extractCurrentBlock(
-          block['block-uid'],
+    extensionAPI.ui.commandPalette.addCommand({
+      label: 'Extract Bluesky Post',
+      callback: () => {
+        let block = window.roamAlphaAPI.ui.getFocusedBlock();
+        console.log('Debug: Command palette callback - focused block:', block);
+        if (block != null) {
+          extractCurrentBlock(
+            block['block-uid'],
+            getPostTemplate(extensionAPI),
+            getimageLocation(extensionAPI)
+          );
+        }
+      },
+      "disable-hotkey": false,
+      "default-hotkey": "ctrl-shift-b"
+    });
+    console.log('Debug: Command palette command added');
+
+    window.roamAlphaAPI.ui.blockContextMenu.addCommand({
+      label: "Extract Bluesky Post",
+      callback: (e) => {
+        console.log('Debug: Context menu callback - event:', e);
+        extractPost(
+          e['block-uid'],
+          e['block-string'],
           getPostTemplate(extensionAPI),
           getimageLocation(extensionAPI)
         );
       }
-    },
-    "disable-hotkey": false,
-    "default-hotkey": "ctrl-shift-b"
-  });
+    });
+    console.log('Debug: Block context menu command added');
 
-  window.roamAlphaAPI.ui.blockContextMenu.addCommand({
-    label: "Extract Bluesky Post",
-    callback: (e) => extractPost(
-      e['block-uid'],
-      e['block-string'],
-      getPostTemplate(extensionAPI),
-      getimageLocation(extensionAPI)
-    )
-  });
-
-  // Auto extract
-  if (extensionAPI.settings.get('auto-extract')) {
-    let posts = await getPageRefs(getAutoExtractTag(extensionAPI));
-    for (const post of posts) {
-      try {
-        await extractPost(
-          post.uid,
-          post.string,
-          getPostTemplate(extensionAPI),
-          getimageLocation(extensionAPI)
-        );
-      } catch (error) {
-        console.error(error, post);
+    if (extensionAPI.settings.get('auto-extract')) {
+      console.log('Debug: Auto-extract enabled, fetching tagged posts');
+      let posts = await getPageRefs(getAutoExtractTag(extensionAPI));
+      console.log('Debug: Found tagged posts:', posts);
+      
+      for (const post of posts) {
+        try {
+          console.log('Debug: Auto-extracting post:', post);
+          await extractPost(
+            post.uid,
+            post.string,
+            getPostTemplate(extensionAPI),
+            getimageLocation(extensionAPI)
+          );
+        } catch (error) {
+          console.error('Debug: Error auto-extracting post:', error, post);
+        }
       }
     }
+
+    console.log(`Debug: ${pkg.name} version ${pkg.version} loaded successfully`);
+  } catch (error) {
+    console.error('Debug: Error during extension load:', error);
+    throw error;
   }
-
-  console.log(`${pkg.name} version ${pkg.version} loaded`);
-
 }
 
 function onunload() {
