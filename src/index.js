@@ -72,11 +72,11 @@ async function parseBlueskyUrl(url) {
     );
 
     const profileData = await profileResponse.json();
-    return { 
-      did: profileData.did, 
-      collection: 'app.bsky.feed.post', 
+    return {
+      did: profileData.did,
+      collection: 'app.bsky.feed.post',
       rkey,
-      profile: profileData 
+      profile: profileData
     };
   }
 
@@ -90,10 +90,10 @@ async function parseBlueskyUrl(url) {
 
 async function fetchBlueskyPost(url) {
   try {
-    const { did, collection, rkey, profile } = await parseBlueskyUrl(url);
+    const { did, collection, rkey } = await parseBlueskyUrl(url);
 
     const response = await fetch(
-      `${CORS_PROXY_URL}https://bsky.social/xrpc/com.atproto.repo.getRecord?repo=${did}&collection=${collection}&rkey=${rkey}`,
+      `${CORS_PROXY_URL}https://api.bsky.app/xrpc/app.bsky.feed.getPostThread?depth=0&uri=at://${did}/${collection}/${rkey}`,
       {
         method: 'GET',
         headers: {
@@ -106,8 +106,8 @@ async function fetchBlueskyPost(url) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    const postData = await response.json();
-    return { ...postData, profile };
+    const threadData = await response.json();
+    return threadData.thread.post;
   } catch (error) {
     console.error('Error fetching Bluesky post:', error);
     throw error;
@@ -130,12 +130,12 @@ async function uploadFile(originalUrl) {
       file: file,
       toast: { hide: true }
     });
-
+    
     // Return as markdown image
     if (blob.type.startsWith('image/')) {
       return `![](${uploadedUrl})`;
     } else if (blob.type.startsWith('video/')) {
-      return `{{[[video]]: ${uploadedUrl}}}`;
+      return uploadedUrl;
     }
 
     return uploadedUrl;
@@ -220,13 +220,14 @@ async function extractPost(uid, post, template, imageLocation) {
   }
 
   let postURL = getPostUrl(post);
-  let { profile, value: postData } = await fetchBlueskyPost(postURL);
+  let thread = await fetchBlueskyPost(postURL);
+  let postData = thread;
 
   // Extract post info
-  let postText = postData.text;
-  let postDate = postData.createdAt;
-  let authorHandle = profile.handle;
-  let authorName = profile.displayName;
+  let postText = postData.record.text;
+  let postDate = postData.record.createdAt;
+  let authorHandle = postData.author.handle;
+  let authorName = postData.author.displayName;
 
   // Convert post date to roam date format
   let roamDate = new Date(Date.parse(postDate));
@@ -240,38 +241,68 @@ async function extractPost(uid, post, template, imageLocation) {
   parsedPost = parsedPost.replaceAll('{AUTHOR_URL}', `https://bsky.app/profile/${authorHandle}`);
   parsedPost = parsedPost.replaceAll('{DATE}', roamDate);
   parsedPost = parsedPost.replaceAll('{NEWLINE}', "\n");
-
-  // Handle images
-  if (postData.embed && postData.embed.$type === 'app.bsky.embed.images') {
-    if (imageLocation === 'inline') {
-      let parsedImages = "";
-      for (const image of postData.embed.images) {
-        const imageUrl = `https://cdn.bsky.social/imgproxy/${image.image.ref.$link}`;
-        const cleanedAttachment = await uploadFile(imageUrl);
-        if (cleanedAttachment) {
-          parsedImages = parsedImages.concat(" ", cleanedAttachment);
+  
+  // Handle media embeds (images or video)
+  if (postData.embed) {
+    if (postData.embed.$type === 'app.bsky.embed.images#view') {
+      if (imageLocation === 'inline') {
+        let parsedImages = "";
+        for (const image of postData.embed.images) {
+          const cleanedAttachment = await uploadFile(image.fullsize);
+          if (cleanedAttachment) {
+            parsedImages = parsedImages.concat(" ", cleanedAttachment);
+          }
+        }
+        parsedPost = parsedPost.replaceAll('{IMAGES}', parsedImages);
+      } else if (imageLocation === 'skip images') {
+        parsedPost = parsedPost.replaceAll('{IMAGES}', "");
+      } else {
+        parsedPost = parsedPost.replaceAll('{IMAGES}', "");
+        for (const image of postData.embed.images) {
+          const cleanedAttachment = await uploadFile(image.fullsize);
+          if (cleanedAttachment) {
+            window.roamAlphaAPI.createBlock({
+              "location": {
+                "parent-uid": uid,
+                "order": 'last'
+              },
+              "block": {
+                "string": cleanedAttachment
+              }
+            });
+          }
         }
       }
-      parsedPost = parsedPost.replaceAll('{IMAGES}', parsedImages);
-    } else if (imageLocation === 'skip images') {
-      parsedPost = parsedPost.replaceAll('{IMAGES}', "");
+    } else if (postData.embed.$type === 'app.bsky.embed.video#view') {
+      if (imageLocation === 'skip images') {
+        parsedPost = parsedPost.replaceAll('{IMAGES}', "");
+      } else {
+        const videoUrl = `https://bsky.social/xrpc/com.atproto.sync.getBlob?did=${postData.author.did}&cid=${postData.embed.cid}`;
+
+
+        const cleanedAttachment = await uploadFile(videoUrl);
+        
+        if (cleanedAttachment) {
+          const videoStr = cleanedAttachment;
+          if (imageLocation === 'inline') {
+            
+            parsedPost = parsedPost.replaceAll('{IMAGES}', videoStr);
+          } else {
+            parsedPost = parsedPost.replaceAll('{IMAGES}', "");
+            window.roamAlphaAPI.createBlock({
+              "location": {
+                "parent-uid": uid,
+                "order": 'last'
+              },
+              "block": { 
+                "string": videoStr
+              }
+            });
+          }
+        }
+      }
     } else {
       parsedPost = parsedPost.replaceAll('{IMAGES}', "");
-      for (const image of postData.embed.images) {
-        const imageUrl = `https://cdn.bsky.social/imgproxy/${image.image.ref.$link}`;
-        const cleanedAttachment = await uploadFile(imageUrl);
-        if (cleanedAttachment) {
-          window.roamAlphaAPI.createBlock({
-            "location": {
-              "parent-uid": uid,
-              "order": 'last'
-            },
-            "block": { 
-              "string": cleanedAttachment 
-            }
-          });
-        }
-      }
     }
   } else {
     parsedPost = parsedPost.replaceAll('{IMAGES}', "");
@@ -300,8 +331,6 @@ function getPageRefs(page) {
 }
 
 async function onload({ extensionAPI }) {
-  console.log("load bluesky extract plugin");
-
   extensionAPI.settings.panel.create(panelConfig);
 
   extensionAPI.ui.commandPalette.addCommand({
