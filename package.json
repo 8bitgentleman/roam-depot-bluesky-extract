@@ -1,6 +1,6 @@
 {
   "name": "roam-depot-bluesky-extract",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Roam Research Plugin to extract bluesky posts to markdown",
   "main": "index.js",
   "scripts": {
